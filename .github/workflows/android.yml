@@ -1,4 +1,4 @@
-name: Android APK PRO
+name: Android APK PRO UI Fix
 on:
   workflow_dispatch:
   push:
