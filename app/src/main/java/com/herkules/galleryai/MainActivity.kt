@@ -51,6 +51,7 @@ class MainActivity : Activity() {
     private var moveIndex = 0
     private var movedCount = 0
     private var moveFailed = 0
+    private var permissionRetried = false
     private val moveItems = mutableListOf<Pair<Uri, String>>()
     private val moveRequestCode = 811
     private var page = "Головна"
@@ -262,6 +263,7 @@ class MainActivity : Activity() {
                 moveItems.clear()
                 moveItems.addAll(matches)
                 moveIndex = 0
+                permissionRetried = false
                 movedCount = 0
                 moveFailed = 0
                 moving = true
@@ -287,9 +289,18 @@ class MainActivity : Activity() {
             val changed = contentResolver.update(uri, values, null, null)
             if (changed > 0) movedCount++ else moveFailed++
             moveIndex++
+            permissionRetried = false
             if (moveIndex % 20 == 0) status.text = "Переміщую ${moveIndex}/${moveItems.size}..."
             handler.post { moveNext() }
         } catch (e: SecurityException) {
+            if (permissionRetried) {
+                moveFailed++
+                moveIndex++
+                permissionRetried = false
+                handler.post { moveNext() }
+                return
+            }
+            permissionRetried = true
             try {
                 if (Build.VERSION.SDK_INT >= 30) {
                     val request = MediaStore.createWriteRequest(contentResolver, listOf(uri))
@@ -309,6 +320,7 @@ class MainActivity : Activity() {
         } catch (_: Exception) {
             moveFailed++
             moveIndex++
+            permissionRetried = false
             handler.post { moveNext() }
         }
     }
