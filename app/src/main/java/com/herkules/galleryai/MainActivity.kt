@@ -3,6 +3,9 @@ package com.herkules.galleryai
 import android.Manifest
 import android.app.Activity
 import android.app.AlertDialog
+import android.app.RecoverableSecurityException
+import android.content.IntentSender
+import android.net.Uri
 import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
@@ -44,6 +47,12 @@ class MainActivity : Activity() {
     private lateinit var body: LinearLayout
     private lateinit var progress: ProgressBar
     private var scanning = false
+    private var moving = false
+    private var moveIndex = 0
+    private var movedCount = 0
+    private var moveFailed = 0
+    private val moveItems = mutableListOf<Pair<Uri, String>>()
+    private val moveRequestCode = 811
     private var page = "Головна"
     private val custom = linkedSetOf<String>()
     private val matches = mutableListOf<Pair<android.net.Uri, String>>()
@@ -56,7 +65,13 @@ class MainActivity : Activity() {
         "Їжа" to listOf("food", "dish", "meal", "cuisine", "fruit", "vegetable"),
         "Люди" to listOf("person", "face", "selfie", "portrait", "people"),
         "Документи" to listOf("document", "text", "paper", "receipt"),
-        "Будівлі" to listOf("building", "architecture", "house", "city")
+        "Будівлі" to listOf("building", "architecture", "house", "city", "skyscraper"),
+        "Транспорт" to listOf("train", "airplane", "aircraft", "bus", "ship", "boat", "bicycle"),
+        "Техніка" to listOf("computer", "laptop", "phone", "electronics", "keyboard", "screen"),
+        "Одяг" to listOf("clothing", "fashion", "shoe", "dress", "jacket", "apparel"),
+        "Мистецтво" to listOf("art", "painting", "drawing", "illustration", "sculpture"),
+        "Інтер’єр" to listOf("furniture", "room", "interior", "bedroom", "kitchen"),
+        "Скріншоти" to listOf("screenshot", "interface", "website")
     )
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -112,7 +127,7 @@ class MainActivity : Activity() {
             scroll.requestApplyInsets()
         }
         scan = button("✦ СКАНУВАТИ ГАЛЕРЕЮ") { requestOrScan() }
-        copy = button("КОПІЮВАТИ В ТЕМАТИЧНІ ПАПКИ") { confirmCopy() }
+        copy = button("ПЕРЕМІСТИТИ ОРИГІНАЛИ В ПАПКИ") { confirmMove() }
         copy.isEnabled = false
         renderPage()
     }
@@ -158,6 +173,7 @@ class MainActivity : Activity() {
                 card("РОЗУМНА ГАЛЕРЕЯ", "Локальний аналіз фотографій. Усі доступні фото отримують категорію, навіть якщо вона потребує перевірки.")
                 body.addView(scan)
                 body.addView(copy)
+                card("БЕЗ ДУБЛІКАТІВ", "Переміщення змінює папку існуючого фото. Перед початком Android попросить підтвердження доступу.")
                 val counts = matches.groupingBy { it.second }.eachCount()
                 card("СТАТИСТИКА", "Категоризовано: ${matches.size}\n" +
                     counts.entries.joinToString("\n") { "${it.key}: ${it.value}" })
@@ -186,7 +202,7 @@ class MainActivity : Activity() {
             }
             else -> {
                 card("НАЛАШТУВАННЯ", "Обробка фотографій відбувається на пристрої за допомогою ML Kit.")
-                card("ЗАХИСТ ДАНИХ", "Сортування виконується копіюванням із підтвердженням. Переміщення та видалення оригіналів не активовані.")
+                card("ЗАХИСТ ДАНИХ", "Сортування переміщує оригінали з дозволу Android. Перед початком перевір результати категоризації. Видалення вимкнене.")
             }
         }
     }
@@ -228,11 +244,85 @@ class MainActivity : Activity() {
             }.setNegativeButton("Скасувати", null).show()
     }
 
-    private fun confirmCopy() {
-        AlertDialog.Builder(this).setTitle("Створити тематичні папки?")
-            .setMessage("Буде створено копії категоризованих фото. Оригінали залишаться без змін. Повторне копіювання вже оброблених файлів буде пропущено.")
-            .setPositiveButton("Копіювати") { _, _ -> copyPhotos() }
+    private fun queryName(uri: Uri): String {
+        return try {
+            contentResolver.query(uri, arrayOf(MediaStore.Images.Media.DISPLAY_NAME), null, null, null)?.use {
+                if (it.moveToFirst()) it.getString(0) ?: "" else ""
+            } ?: ""
+        } catch (_: Exception) { "" }
+    }
+
+    private fun confirmMove() {
+        if (scanning || moving || matches.isEmpty()) return
+        val review = matches.count { it.second == "Потребує перевірки" }
+        AlertDialog.Builder(this)
+            .setTitle("Перемістити оригінали?")
+            .setMessage("Буде переміщено ${matches.size} фотографій у Pictures/Hercules AI Gallery. Оригінальні файли залишаться тими самими, але змінять папки. ${review} фото потребують перевірки. Рекомендуємо спочатку переглянути альбоми. Android може попросити дозвіл.")
+            .setPositiveButton("ПЕРЕМІСТИТИ") { _, _ ->
+                moveItems.clear()
+                moveItems.addAll(matches)
+                moveIndex = 0
+                movedCount = 0
+                moveFailed = 0
+                moving = true
+                scan.isEnabled = false
+                copy.isEnabled = false
+                moveNext()
+            }
             .setNegativeButton("Скасувати", null).show()
+    }
+
+    private fun moveNext() {
+        if (moveIndex >= moveItems.size) {
+            moving = false
+            scan.isEnabled = true
+            copy.isEnabled = true
+            status.text = "Переміщено: $movedCount; помилок: $moveFailed. Файли без копій. Перевір альбоми в Honor Gallery."
+            return
+        }
+        val (uri, category) = moveItems[moveIndex]
+        val target = "Pictures/Hercules AI Gallery/${category.replace("/", " ").replace("\\", " " )}/"
+        val values = ContentValues().apply { put(MediaStore.Images.Media.RELATIVE_PATH, target) }
+        try {
+            val changed = contentResolver.update(uri, values, null, null)
+            if (changed > 0) movedCount++ else moveFailed++
+            moveIndex++
+            if (moveIndex % 20 == 0) status.text = "Переміщую ${moveIndex}/${moveItems.size}..."
+            handler.post { moveNext() }
+        } catch (e: SecurityException) {
+            try {
+                if (Build.VERSION.SDK_INT >= 30) {
+                    val request = MediaStore.createWriteRequest(contentResolver, listOf(uri))
+                    startIntentSenderForResult(request.intentSender, moveRequestCode, null, 0, 0, 0)
+                } else if (Build.VERSION.SDK_INT >= 29 && e is RecoverableSecurityException) {
+                    startIntentSenderForResult(e.userAction.actionIntent.intentSender, moveRequestCode, null, 0, 0, 0)
+                } else {
+                    moveFailed++
+                    moveIndex++
+                    handler.post { moveNext() }
+                }
+            } catch (_: Exception) {
+                moveFailed++
+                moveIndex++
+                handler.post { moveNext() }
+            }
+        } catch (_: Exception) {
+            moveFailed++
+            moveIndex++
+            handler.post { moveNext() }
+        }
+    }
+
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: android.content.Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == moveRequestCode && moving) {
+            if (resultCode != RESULT_OK) {
+                moving = false
+                scan.isEnabled = true
+                copy.isEnabled = true
+                status.text = "Переміщення зупинено. Переміщено: $movedCount; помилок: $moveFailed."
+            } else handler.post { moveNext() }
+        }
     }
 
     private fun requestOrScan() {
@@ -290,67 +380,19 @@ class MainActivity : Activity() {
         try {
             val image = InputImage.fromFilePath(this, uri)
             labeler.process(image).addOnSuccessListener { labels ->
-                val best = labels.filter { it.confidence >= 0.65f }
+                val best = labels.filter { it.confidence >= 0.45f }
                     .sortedByDescending { it.confidence }
                     .firstNotNullOfOrNull { label ->
                         categories.entries.firstOrNull { entry ->
                             entry.value.any { word -> label.text.contains(word, ignoreCase = true) }
                         }?.key
                     }
-                matches.add(uri to (best ?: "Потребує перевірки"))
+                val fileName = queryName(uri)
+                val finalCategory = if (fileName.startsWith("Screenshot", true) || fileName.startsWith("Знімок екрана", true)) "Скріншоти" else best ?: "Потребує перевірки"
+                matches.add(uri to finalCategory)
                 analyzeNext(photos, index + 1)
             }.addOnFailureListener { matches.add(uri to "Потребує перевірки"); analyzeNext(photos, index + 1) }
         } catch (_: Exception) { matches.add(uri to "Потребує перевірки"); analyzeNext(photos, index + 1) }
-    }
-
-    private fun copyPhotos() {
-        copy.isEnabled = false
-        scan.isEnabled = false
-        status.text = "Копіюю фотографії. Не закривай застосунок..."
-        val items = matches.toList()
-        executor.execute {
-            var success = 0
-            var failed = 0
-            var skipped = 0
-            val prefs = getSharedPreferences("copied_v2", MODE_PRIVATE)
-            for ((uri, category) in items) {
-                val key = uri.toString() + "|" + category
-                if (prefs.getBoolean(key, false)) { skipped++; continue }
-                try {
-                    val mime = contentResolver.getType(uri) ?: "image/jpeg"
-                    val ext = when (mime) { "image/png" -> "png"; "image/webp" -> "webp"; "image/heic", "image/heif" -> "heic"; "image/gif" -> "gif"; else -> "jpg" }
-                    val values = ContentValues().apply {
-                        put(MediaStore.Images.Media.DISPLAY_NAME, "galleryai_${System.currentTimeMillis()}_${success + failed}.$ext")
-                        put(MediaStore.Images.Media.MIME_TYPE, mime)
-                        put(MediaStore.Images.Media.RELATIVE_PATH, "Pictures/Hercules AI Gallery/$category")
-                        put(MediaStore.Images.Media.IS_PENDING, 1)
-                    }
-                    val outputUri = contentResolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values)
-                        ?: throw IllegalStateException("Не вдалося створити файл")
-                    try {
-                        contentResolver.openInputStream(uri).use { input ->
-                            requireNotNull(input)
-                            contentResolver.openOutputStream(outputUri).use { output ->
-                                requireNotNull(output)
-                                input.copyTo(output)
-                            }
-                        }
-                        contentResolver.update(outputUri, ContentValues().apply {
-                            put(MediaStore.Images.Media.IS_PENDING, 0)
-                        }, null, null)
-                        prefs.edit().putBoolean(key, true).apply()
-                        success++
-                    } catch (e: Exception) {
-                        contentResolver.delete(outputUri, null, null)
-                        throw e
-                    }
-                } catch (_: Exception) { failed++ }
-            }
-            handler.post {
-                status.text = "Готово! Скопійовано: $success; пропущено повторних: $skipped; помилок: $failed.\nОригінали не змінені. Папки: Pictures/Hercules AI Gallery."
-                scan.isEnabled = true
-            }
-        }
     }
 
     override fun onDestroy() {
