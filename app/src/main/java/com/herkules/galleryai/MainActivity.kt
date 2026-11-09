@@ -18,6 +18,13 @@ import android.os.Handler
 import android.os.Looper
 import android.provider.MediaStore
 import android.view.View
+import android.view.WindowManager
+import android.view.Window
+import android.view.Gravity
+import android.view.WindowInsets
+import android.view.WindowInsetsController
+import android.graphics.Rect
+import android.widget.FrameLayout
 import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.ScrollView
@@ -54,25 +61,28 @@ class MainActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        window.clearFlags(WindowManager.LayoutParams.FLAG_TRANSLUCENT_STATUS or WindowManager.LayoutParams.FLAG_TRANSLUCENT_NAVIGATION)
+        window.decorView.systemUiVisibility = 0
         window.statusBarColor = Color.rgb(12, 17, 29)
         window.navigationBarColor = Color.rgb(12, 17, 29)
         root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(18, 24, 18, 20)
+            setPadding(16, 18, 16, 20)
             setBackgroundColor(Color.rgb(12, 17, 29))
         }
         val heading = TextView(this).apply {
-            text = "✦ HERCULES AI GALLERY PRO"
-            textSize = 22f
+            text = "✦ HERCULES AI"
+            textSize = 21f
             setTextColor(Color.rgb(102, 232, 207))
             typeface = Typeface.DEFAULT_BOLD
-            setPadding(4, 8, 0, 20)
+            setPadding(4, 8, 0, 12)
+            maxLines = 1
         }
         root.addView(heading)
-        val tabs = HorizontalScrollView(this)
-        val nav = LinearLayout(this)
+        val tabs = HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled = false; isFillViewport = false }
+        val nav = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         listOf("Головна", "Альбоми", "ШІ-Помічник", "Очищення", "Налаштування").forEach { name ->
-            nav.addView(button(name) { page = name; renderPage() })
+            nav.addView(button(name) { page = name; renderPage() }.apply { textSize = 11f; isAllCaps = false; minWidth = 0; minimumWidth = 0; setPadding(14, 0, 14, 0) })
         }
         tabs.addView(nav)
         root.addView(tabs)
@@ -91,8 +101,16 @@ class MainActivity : Activity() {
         root.addView(status)
         body = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         root.addView(body)
-        val scroll = ScrollView(this).apply { addView(root) }
+        val scroll = ScrollView(this).apply { addView(root); setFillViewport(true); setBackgroundColor(Color.rgb(12, 17, 29)); isVerticalScrollBarEnabled = false }
         setContentView(scroll)
+        if (Build.VERSION.SDK_INT >= 35) {
+            scroll.setOnApplyWindowInsetsListener { view, insets ->
+                val bars = insets.getInsets(WindowInsets.Type.systemBars() or WindowInsets.Type.displayCutout())
+                view.setPadding(bars.left, bars.top, bars.right, bars.bottom)
+                insets
+            }
+            scroll.requestApplyInsets()
+        }
         scan = button("✦ СКАНУВАТИ ГАЛЕРЕЮ") { requestOrScan() }
         copy = button("КОПІЮВАТИ В ТЕМАТИЧНІ ПАПКИ") { confirmCopy() }
         copy.isEnabled = false
