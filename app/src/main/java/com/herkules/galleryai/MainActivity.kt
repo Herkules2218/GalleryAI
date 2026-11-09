@@ -105,7 +105,7 @@ class MainActivity : Activity() {
             val counts = matches.groupingBy { it.second }.eachCount()
             status.text = "Перевірено: ${photos.size}; розпізнано: ${matches.size}\n" +
                 counts.entries.joinToString("\n") { "${it.key}: ${it.value}" } +
-                "\n\nНерозпізнані фото залишаться без змін. Натисни кнопку нижче для копіювання."
+                "\n\nФото без впевненої категорії потраплять у «Потребує перевірки». Натисни кнопку нижче для копіювання."
             return
         }
         if (index % 10 == 0) status.text = "Аналізую ${index + 1} / ${photos.size}..."
@@ -120,7 +120,7 @@ class MainActivity : Activity() {
                             entry.value.any { word -> label.text.contains(word, ignoreCase = true) }
                         }?.key
                     }
-                if (best != null) matches.add(uri to best)
+                matches.add(uri to (best ?: "Потребує перевірки"))
                 analyzeNext(photos, index + 1)
             }.addOnFailureListener { analyzeNext(photos, index + 1) }
         } catch (_: Exception) { analyzeNext(photos, index + 1) }
